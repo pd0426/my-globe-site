@@ -1,1 +1,445 @@
-<h1>hello</h1>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Day & Night Globe</title>
+  <style>
+    :root {
+      --bg: #04060d;
+      --panel: rgba(12, 17, 30, 0.82);
+      --border: rgba(255, 255, 255, 0.12);
+      --text: #e8ecf4;
+      --muted: #9aa4b8;
+      --accent: #ffcc4d;
+      --you: #ff4d6d;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+    #globe { position: fixed; inset: 0; }
+    #panel {
+      position: fixed; top: 16px; left: 16px;
+      width: min(320px, calc(100vw - 32px));
+      padding: 16px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      backdrop-filter: blur(8px);
+    }
+    h1 { margin: 0 0 4px; font-size: 18px; }
+    .sub { margin: 0 0 12px; color: var(--muted); font-size: 12px; }
+    .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+    .row span:first-child { color: var(--muted); }
+    .row span:last-child { text-align: right; font-variant-numeric: tabular-nums; }
+    button {
+      margin-top: 12px; width: 100%;
+      padding: 8px 12px;
+      background: var(--accent); color: #1a1300;
+      border: 0; border-radius: 8px;
+      font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; cursor: default; }
+    #legend {
+      position: fixed; bottom: 16px; left: 16px;
+      width: min(320px, calc(100vw - 32px));
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 12px; color: var(--muted);
+    }
+    .scale {
+      height: 8px; margin: 6px 0 4px; border-radius: 4px;
+      background: linear-gradient(90deg, #3b6cff, #4fd1ff, #7be495, #ffd84d, #ff8a3d, #ff3d3d);
+    }
+    .scale-labels { display: flex; justify-content: space-between; }
+    .temp-label {
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-size: 11px; font-weight: 600;
+      color: #0b0f1a;
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+      transition: opacity 0.2s;
+    }
+    .temp-label small { font-weight: 400; opacity: 0.8; }
+    .you-label {
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: var(--you); color: #fff;
+      font-size: 12px; font-weight: 700;
+      pointer-events: none;
+      transform: translateY(-18px);
+    }
+    @media (max-width: 600px) {
+      #panel { padding: 12px; }
+      .temp-label small { display: none; }
+    }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <div id="globe"></div>
+
+  <div id="panel">
+    <h1>Day &amp; Night Globe</h1>
+    <p class="sub">Live sunlight, rough regional temperatures, and where you are.</p>
+    <div class="row"><span>UTC time</span><span id="utc">–</span></div>
+    <div class="row"><span>Sun overhead at</span><span id="subsolar">–</span></div>
+    <div class="row"><span>Your location</span><span id="loc">asking…</span></div>
+    <div class="row"><span>Your local time</span><span id="localtime">–</span></div>
+    <div class="row"><span>Where you are it is</span><span id="daynight">–</span></div>
+    <button id="goto" disabled>Show me on the globe</button>
+  </div>
+
+  <div id="legend">
+    Approx. average temperature this month (°C)
+    <div class="scale"></div>
+    <div class="scale-labels"><span>−40</span><span>−10</span><span>10</span><span>25</span><span>40</span></div>
+  </div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+    import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
+
+    const RADIUS = 1;
+    const TEXTURE_BASE = 'https://unpkg.com/three-globe@2.31.0/example/img/';
+
+    // Rough monthly average temperatures (°C) for large regions: [name, lat, lon, January, July].
+    const REGIONS = [
+      ['Arctic / Greenland', 72, -40, -30, 5],
+      ['Canada', 58, -100, -20, 17],
+      ['United States', 39, -98, 0, 24],
+      ['Mexico & Central America', 20, -100, 18, 24],
+      ['Amazon', -5, -62, 27, 27],
+      ['Southern South America', -35, -65, 24, 9],
+      ['Western Europe', 48, 5, 3, 19],
+      ['Russia / Siberia', 60, 95, -25, 18],
+      ['Sahara', 23, 10, 15, 34],
+      ['Central Africa', 0, 22, 25, 24],
+      ['Southern Africa', -25, 25, 24, 12],
+      ['Middle East', 26, 45, 14, 35],
+      ['India', 22, 79, 18, 30],
+      ['China', 35, 105, -3, 23],
+      ['Japan', 37, 138, 4, 25],
+      ['Southeast Asia', 10, 105, 26, 28],
+      ['Australia', -25, 134, 29, 14],
+      ['Antarctica', -80, 0, -28, -60],
+    ];
+
+    // Convert latitude/longitude to a point on the sphere, matching three.js equirectangular UVs.
+    function latLonToVector(lat, lon, r = RADIUS) {
+      const phi = THREE.MathUtils.degToRad(lon + 180);
+      const theta = THREE.MathUtils.degToRad(90 - lat);
+      return new THREE.Vector3(
+        -r * Math.cos(phi) * Math.sin(theta),
+        r * Math.cos(theta),
+        r * Math.sin(phi) * Math.sin(theta)
+      );
+    }
+
+    function dayOfYear(date) {
+      const start = Date.UTC(date.getUTCFullYear(), 0, 0);
+      return (date - start) / 86400000;
+    }
+
+    // Approximate point on Earth where the sun is directly overhead.
+    function subsolarPoint(date) {
+      const n = dayOfYear(date);
+      const declination = -23.44 * Math.cos((2 * Math.PI / 365) * (n + 10));
+      const b = (2 * Math.PI * (n - 81)) / 364;
+      const equationOfTime = 9.87 * Math.sin(2 * b) - 7.53 * Math.cos(b) - 1.5 * Math.sin(b);
+      const utcHours = date.getUTCHours() + date.getUTCMinutes() / 60 + date.getUTCSeconds() / 3600;
+      let lon = -15 * (utcHours - 12) - equationOfTime / 4;
+      lon = ((lon + 540) % 360) - 180;
+      return { lat: declination, lon };
+    }
+
+    // Blend January and July averages by where we are in the year.
+    function currentTemp(jan, jul, date) {
+      const t = (1 - Math.cos((2 * Math.PI * (dayOfYear(date) - 15)) / 365)) / 2;
+      return jan + (jul - jan) * t;
+    }
+
+    function tempColor(c) {
+      const stops = [[-40, '#3b6cff'], [-10, '#4fd1ff'], [5, '#7be495'], [20, '#ffd84d'], [30, '#ff8a3d'], [40, '#ff3d3d']];
+      if (c <= stops[0][0]) return stops[0][1];
+      for (let i = 1; i < stops.length; i++) {
+        if (c <= stops[i][0]) {
+          const [c0, h0] = stops[i - 1];
+          const [c1, h1] = stops[i];
+          return new THREE.Color(h0).lerp(new THREE.Color(h1), (c - c0) / (c1 - c0)).getStyle();
+        }
+      }
+      return stops[stops.length - 1][1];
+    }
+
+    function formatLatLon(lat, lon) {
+      const ns = lat >= 0 ? 'N' : 'S';
+      const ew = lon >= 0 ? 'E' : 'W';
+      return `${Math.abs(lat).toFixed(1)}°${ns}, ${Math.abs(lon).toFixed(1)}°${ew}`;
+    }
+
+    // Scene
+    const container = document.getElementById('globe');
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+    camera.position.copy(latLonToVector(20, 0, 3.2));
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    container.appendChild(renderer.domElement);
+
+    const labelRenderer = new CSS2DRenderer();
+    labelRenderer.setSize(innerWidth, innerHeight);
+    labelRenderer.domElement.style.position = 'fixed';
+    labelRenderer.domElement.style.inset = '0';
+    labelRenderer.domElement.style.pointerEvents = 'none';
+    container.appendChild(labelRenderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.enablePan = false;
+    controls.minDistance = 1.5;
+    controls.maxDistance = 8;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.3;
+    controls.addEventListener('start', () => { controls.autoRotate = false; });
+
+    // Stars
+    const starPositions = [];
+    for (let i = 0; i < 2000; i++) {
+      const v = new THREE.Vector3().randomDirection().multiplyScalar(40 + Math.random() * 20);
+      starPositions.push(v.x, v.y, v.z);
+    }
+    const starGeometry = new THREE.BufferGeometry();
+    starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3));
+    scene.add(new THREE.Points(starGeometry, new THREE.PointsMaterial({ color: 0xffffff, size: 0.08 })));
+
+    // Earth with day/night blend
+    const loader = new THREE.TextureLoader();
+    const earthMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        dayTexture: { value: loader.load(TEXTURE_BASE + 'earth-blue-marble.jpg') },
+        nightTexture: { value: loader.load(TEXTURE_BASE + 'earth-night.jpg') },
+        sunDirection: { value: new THREE.Vector3(1, 0, 0) },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        void main() {
+          vUv = uv;
+          vNormal = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D dayTexture;
+        uniform sampler2D nightTexture;
+        uniform vec3 sunDirection;
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        void main() {
+          float light = dot(vNormal, sunDirection);
+          float blend = smoothstep(-0.08, 0.08, light);
+          vec3 day = texture2D(dayTexture, vUv).rgb * (0.55 + 0.45 * max(light, 0.0));
+          vec3 night = texture2D(nightTexture, vUv).rgb * 1.2 + vec3(0.01, 0.015, 0.03);
+          gl_FragColor = vec4(mix(night, day, blend), 1.0);
+        }
+      `,
+    });
+    const earth = new THREE.Mesh(new THREE.SphereGeometry(RADIUS, 96, 96), earthMaterial);
+    scene.add(earth);
+
+    // Soft atmosphere glow
+    const atmosphere = new THREE.Mesh(
+      new THREE.SphereGeometry(RADIUS * 1.04, 64, 64),
+      new THREE.ShaderMaterial({
+        vertexShader: `
+          varying vec3 vNormal;
+          void main() {
+            vNormal = normalize(normalMatrix * normal);
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }
+        `,
+        fragmentShader: `
+          varying vec3 vNormal;
+          void main() {
+            float intensity = pow(0.65 - dot(vNormal, vec3(0.0, 0.0, 1.0)), 3.0);
+            gl_FragColor = vec4(0.35, 0.6, 1.0, 1.0) * intensity;
+          }
+        `,
+        side: THREE.BackSide,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+      })
+    );
+    scene.add(atmosphere);
+
+    // Temperature labels
+    const regionLabels = REGIONS.map(([name, lat, lon, jan, jul]) => {
+      const el = document.createElement('div');
+      el.className = 'temp-label';
+      const label = new CSS2DObject(el);
+      label.position.copy(latLonToVector(lat, lon, RADIUS * 1.01));
+      earth.add(label);
+      return { el, label, name, jan, jul };
+    });
+
+    function updateTemperatures(now) {
+      for (const r of regionLabels) {
+        const c = currentTemp(r.jan, r.jul, now);
+        r.el.style.background = tempColor(c);
+        r.el.innerHTML = `${Math.round(c)}°C <small>${r.name}</small>`;
+      }
+    }
+
+    // User location marker
+    const youGroup = new THREE.Group();
+    const youDot = new THREE.Mesh(
+      new THREE.SphereGeometry(0.018, 16, 16),
+      new THREE.MeshBasicMaterial({ color: 0xff4d6d })
+    );
+    const youRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.025, 0.035, 32),
+      new THREE.MeshBasicMaterial({ color: 0xff4d6d, transparent: true, side: THREE.DoubleSide })
+    );
+    youGroup.add(youDot, youRing);
+    const youEl = document.createElement('div');
+    youEl.className = 'you-label';
+    youEl.textContent = 'You are here';
+    const youLabel = new CSS2DObject(youEl);
+    youGroup.add(youLabel);
+    youGroup.visible = false;
+    earth.add(youGroup);
+
+    let userLocation = null;
+    const gotoButton = document.getElementById('goto');
+
+    function setUserLocation(lat, lon, source) {
+      userLocation = { lat, lon };
+      const surface = latLonToVector(lat, lon, RADIUS * 1.005);
+      youGroup.position.copy(surface);
+      youGroup.lookAt(surface.clone().multiplyScalar(2));
+      youGroup.visible = true;
+      document.getElementById('loc').textContent = `${formatLatLon(lat, lon)}${source ? ` (${source})` : ''}`;
+      gotoButton.disabled = false;
+      updateInfo(new Date());
+    }
+
+    // Rough fallback: guess longitude from the browser's time zone offset.
+    function fallbackLocation() {
+      const offsetHours = -new Date().getTimezoneOffset() / 60;
+      setUserLocation(30, offsetHours * 15, 'guessed from time zone');
+    }
+
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => setUserLocation(pos.coords.latitude, pos.coords.longitude, ''),
+        fallbackLocation,
+        { timeout: 10000, maximumAge: 600000 }
+      );
+    } else {
+      fallbackLocation();
+    }
+
+    gotoButton.addEventListener('click', () => {
+      if (!userLocation) return;
+      controls.autoRotate = false;
+      flyTo = {
+        from: camera.position.clone(),
+        to: latLonToVector(userLocation.lat, userLocation.lon, camera.position.length()),
+        start: performance.now(),
+      };
+    });
+
+    let flyTo = null;
+
+    function updateInfo(now) {
+      const sun = subsolarPoint(now);
+      earthMaterial.uniforms.sunDirection.value.copy(latLonToVector(sun.lat, sun.lon, 1));
+      document.getElementById('utc').textContent = now.toISOString().slice(11, 16);
+      document.getElementById('subsolar').textContent = formatLatLon(sun.lat, sun.lon);
+      document.getElementById('localtime').textContent =
+        now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      if (userLocation) {
+        const you = latLonToVector(userLocation.lat, userLocation.lon, 1);
+        const sunDir = earthMaterial.uniforms.sunDirection.value;
+        const elevation = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(you.dot(sunDir), -1, 1)));
+        let state = 'Night 🌙';
+        if (elevation > 6) state = 'Day ☀️';
+        else if (elevation > -6) state = 'Twilight 🌅';
+        document.getElementById('daynight').textContent = `${state} (sun ${elevation.toFixed(0)}°)`;
+      }
+    }
+
+    const now = new Date();
+    updateInfo(now);
+    updateTemperatures(now);
+    setInterval(() => {
+      const t = new Date();
+      updateInfo(t);
+      updateTemperatures(t);
+    }, 30000);
+
+    // Hide labels on the far side of the globe
+    const cameraDir = new THREE.Vector3();
+    const worldPos = new THREE.Vector3();
+    function updateLabelVisibility() {
+      cameraDir.copy(camera.position).normalize();
+      for (const r of regionLabels) {
+        r.label.getWorldPosition(worldPos);
+        r.el.style.opacity = worldPos.normalize().dot(cameraDir) > 0.15 ? '1' : '0';
+      }
+      youGroup.getWorldPosition(worldPos);
+      youEl.style.opacity = worldPos.normalize().dot(cameraDir) > 0.1 ? '1' : '0';
+    }
+
+    addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+      labelRenderer.setSize(innerWidth, innerHeight);
+    });
+
+    function animate(time) {
+      requestAnimationFrame(animate);
+
+      if (flyTo) {
+        const t = Math.min((time - flyTo.start) / 1200, 1);
+        const eased = t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+        const dist = flyTo.from.length();
+        camera.position.copy(flyTo.from).normalize()
+          .lerp(flyTo.to.clone().normalize(), eased).normalize().multiplyScalar(dist);
+        if (t === 1) flyTo = null;
+      }
+
+      const pulse = 1 + 0.6 * ((time / 1000) % 1);
+      youRing.scale.setScalar(pulse);
+      youRing.material.opacity = 1 - ((time / 1000) % 1);
+
+      controls.update();
+      updateLabelVisibility();
+      renderer.render(scene, camera);
+      labelRenderer.render(scene, camera);
+    }
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>
